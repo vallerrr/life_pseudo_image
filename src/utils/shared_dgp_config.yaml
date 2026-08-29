@@ -1,0 +1,30 @@
+structure:
+  T: 20
+  C: 12
+  P: 3
+  channels_per_stream: 4
+latent:
+  rho_u: 0.9
+  rho_m: 0.7
+  rho_d: 0.8
+  a: 0.4
+  b: 0.4
+  c: 0.2
+  intercept_sd: 0.5
+  innovation_sd: 1.0
+observation:
+  loading_low: 0.6
+  loading_high: 1.0
+  measurement_sd: 0.5
+hazard:
+  target_disease: 0.15
+  target_death: 0.20
+  beta: 0.4054651081081644
+  gamma: [0.15, 0.25, 0.50]
+  alpha_frailty: 0.4054651081081644
+  alpha_downstream: 0.22314355131420976
+missingness:
+  item_nonresponse: 0.10
+  rotating_fraction: 0.50
+  attrition_target: 0.30
+  attrition_log_odds_ratio: 1.0

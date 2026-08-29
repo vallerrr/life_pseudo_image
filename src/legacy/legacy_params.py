@@ -1,9 +1,17 @@
-from pathlib import Path
+"""Preserved pre-reorganisation prototype. Not part of the current pipeline.
+
+Superseded by the simulation-first first deliverable (see doc/decisions_shared.md
+D01, D06). Kept because it encodes the HRS variable selection and recode maps, which
+are expensive to reconstruct. Paths come from the registry so it still resolves.
+"""
+
 import re
 
-current_path = Path.cwd()/'image_converter'
+from utils import shared_paths as P
+
+current_path = P.PROJECT_ROOT
 # hrs example
-hrs_path = Path("/Users/valler/Python/OX_Thesis/OX_thesis/data/HRS/data_preprocess/Data/Rand/randhrs1992_2018v1.dta")
+hrs_path = P.HRS_DIR / "randhrs1992_2022v1_STATA" / "randhrs1992_2022v1.dta"
 hrs_var_selection = {'upper':['r1work','R1LBRF','RABYEAR','R1AGEM_B','RAGENDER','RARACEM','RAEDYRS','RAEDUC'],
                      'middle':['R1MPART','R1MSTATH','H1ITOT','H1HHRES'],
                      'lower':['R1BMI','R1DRINK','R3DRINKD','R1SMOKEV','R1SMOKEN']}
@@ -29,12 +37,11 @@ def select_data(df,var_selection):
     for key in var_selection.keys():
         vars = [x.lower() for x in var_selection[key]]
         for var in vars:
-            if len(re.findall('\d', var)) > 0: #multiple waves
-                var_split = var.split(re.findall('\d', var)[0])
+            if len(re.findall(r'\d', var)) > 0: #multiple waves
+                var_split = var.split(re.findall(r'\d', var)[0])
                 pattern = re.compile(rf'{var_split[0]}\d+{var_split[1]}$')
                 filtered_vars = [var for var in columns if pattern.match(var)]
             else:
                 filtered_vars = [var]
             selected_cols+= filtered_vars
     return df[selected_cols]
-

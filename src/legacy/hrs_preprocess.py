@@ -1,12 +1,12 @@
 import pandas as pd
-from image_converter.src import params
+from legacy import legacy_params as params
 import re
 from pathlib import Path
 import warnings
 import matplotlib.pyplot as plt
 
 warnings.filterwarnings(action='ignore')
-current_path = Path.cwd() / 'image_converter'
+current_path = params.current_path
 var_selection = params.convert_dict(params.hrs_var_selection)
 
 df_selected = params.select_data(pd.read_stata(params.hrs_path), var_selection).dropna()
@@ -14,8 +14,8 @@ df_selected = params.select_data(pd.read_stata(params.hrs_path), var_selection).
 
 
 for var in params.replace_dict.keys():
-    if len(re.findall('\d', var)) > 0:  # multiple waves
-        var_split = var.split(re.findall('\d', var)[0])
+    if len(re.findall(r'\d', var)) > 0:  # multiple waves
+        var_split = var.split(re.findall(r'\d', var)[0])
         pattern = re.compile(rf'{var_split[0]}\d+{var_split[1]}$')
         filtered_vars = [var for var in df_selected.columns if pattern.match(var)]
         df_selected.loc[:, filtered_vars] = df_selected.loc[:, filtered_vars].astype(str).replace(params.replace_dict[var])
@@ -37,8 +37,8 @@ def normalize_across_time(df, columns):
     """
     for col in columns:
         # Generate the column names for the specified time periods
-        if len(re.findall('\d', col)) > 0:  # multiple waves
-            var_split = col.split(re.findall('\d', col)[0])
+        if len(re.findall(r'\d', col)) > 0:  # multiple waves
+            var_split = col.split(re.findall(r'\d', col)[0])
             pattern = re.compile(rf'{var_split[0]}\d+{var_split[1]}$')
             filtered_vars = [var for var in df_selected.columns if pattern.match(var)]
             # Calculate the global minimum and maximum across these columns
@@ -70,12 +70,12 @@ for row_index in range(0,21):
     row_reformatted = pd.DataFrame(columns=['var_name'] + [f't{i}' for i in range(1, period + 1)])
     one_row = df_selected.loc[row_index,:]
     for col in columns:
-        if len(re.findall('\d', col)) > 0:  # multiple waves
-            var_split = col.split(re.findall('\d', col)[0])
+        if len(re.findall(r'\d', col)) > 0:  # multiple waves
+            var_split = col.split(re.findall(r'\d', col)[0])
             pattern = re.compile(rf'{var_split[0]}\d+{var_split[1]}$')
             filtered_vars = [var for var in df_selected.columns if pattern.match(var)]
             if len(filtered_vars) <= period:
-                periods = [int(re.findall(f'\d+',x)[0]) for x in filtered_vars]
+                periods = [int(re.findall(r'\d+', x)[0]) for x in filtered_vars]
                 values = [None if x not in periods else one_row[f'{var_split[0]}{x}{var_split[1]}'] for x in range(1,period+1)]
             else:
                 values = list(one_row[filtered_vars])

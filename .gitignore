@@ -1,4 +1,28 @@
 **/.DS_Store
-/.idea
-/image_converter/file
-image_converter/src/__pycache__/params.cpython-39.pyc
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.ipynb_checkpoints/
+
+# Credentials. Pre-armed: no config/ exists yet, but the pattern is easy to get subtly
+# wrong later, so it is set now. The real file is never committed; .example always is.
+config/*.ini
+!config/*.ini.example
+
+# Source pulls and derived data. Immutable, large, and reproducible respectively.
+/data/hrs/
+/data/analysis/*
+!/data/analysis/.gitkeep
+
+# Machine-generated artifacts.
+/logs/*
+!/logs/.gitkeep
+/output/figures/**
+!/output/figures/**/
+!/output/figures/**/.gitkeep
+/output/tables/*
+!/output/tables/.gitkeep
+
+# Scratch: matplotlib cache and throwaway renders.
+/tmp/

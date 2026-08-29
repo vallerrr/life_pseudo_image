@@ -1,0 +1,42 @@
+# Plotting style for the whole project. Read through utils.shared_style.load_style();
+# never re-declared as a STYLE = {...} literal in a notebook or script (conventions §6).
+#
+# Two loader conveniences that are not guessable from this file alone:
+#   * inside `roles` and any `*_colors` map, an INTEGER means "index into colors", so a
+#     palette change carries the semantic roles with it; a STRING is taken literally.
+#   * two-element `figsize*` lists become tuples, as matplotlib expects.
+# `savedir` is relative to the repo root and applies only when `save: true`.
+
+style:
+  base:
+    colors:
+      - "#255F85"   # 0 upstream / primary
+      - "#2A9D8F"   # 1 midstream / secondary
+      - "#E9C46A"   # 2 highlight
+      - "#E76F51"   # 3 downstream / alert
+    roles:
+      disease: 0
+      attrition: 1
+      emphasis: 2
+      death: 3
+      footer: "#555555"
+    figsize: [12, 7]
+    title_fs: 16
+    label_fs: 11
+    tick_fs: 9
+    legend_fs: 8
+    dpi: 300
+    save: true
+    formats: ["pdf"]
+    savedir: "output/figures"
+
+  notebooks:
+    # Analysis 01: six one-page landscape A4 DGP diagnostic reports.
+    01_dgp_diagnostics:
+      figsize: [11.69, 8.27]        # landscape A4, one report page
+      savedir: "output/figures/data_analysis/01_dgp_diagnostics"
+      body_fs: 9
+      footer_fs: 8
+      trajectory_linewidth: 0.9
+      missing_cmap: "viridis"
+      truth_cmap: "magma"
