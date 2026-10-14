@@ -1,0 +1,62 @@
+# The 2D pseudo-image CNN (analysis 02): architecture, search grid and run profiles.
+# Read through P.PSEUDO_IMAGE_CNN_CONFIG; recorded verbatim in every shard's manifest.
+#
+# A profile is a full run definition. `study` is the spec's design (§1.5, §2, §3);
+# `smoke` exists only to prove the plumbing end to end in a minute, and its numbers
+# mean nothing -- the job stamps every row with the profile so they cannot be mixed.
+
+architecture:
+  kernel: [4, 5]            # channels x bins: the spec's 4x5 (§2)
+  depth: 2                  # stacked causal conv layers
+  hidden: 32                # per-bin features after the channel axis is flattened
+  causal: true              # false only to measure the leak (see the module docstring)
+
+# auto = Apple GPU (MPS) when present, else CPU. MPS is ~8x faster here but not
+# bit-reproducible run to run; set cpu when a rerun must match exactly.
+device: auto
+
+# Static covariates the model sees, by name (shared_model_input.STATIC_NAMES).
+# Frailty is withheld by default: it is unmeasurable in a real cohort.
+static: [cohort, sex]
+
+# Inner-CV grid (spec §2: 5 outer folds for performance, 3 inner for hyperparameters).
+# The signal is faint against the per-bin baseline: at lr 0.003 validation NLL bottoms
+# out by epoch ~4, before any window is learnt. Slow rates are in the grid for that.
+grid:
+  width: [16, 32]
+  lr: [0.0003, 0.001]
+  weight_decay: [0.0001, 0.001]
+  dropout: [0.1]
+
+training:
+  batch_size: 256
+  max_epochs: 300
+  patience: 30              # NLL moves in the 4th decimal; short patience stops on noise
+  early_stop_fraction: 0.2  # of each training set, held out for early stopping only
+
+attribution:
+  n_explain: 1000           # test-fold people explained per fold
+  n_baselines: 50           # training-set baselines drawn for Expected Gradients
+  n_samples: 50             # path samples per explicand
+
+profiles:
+  study:
+    scenarios: [accumulation, critical_period, sensitive_period, chain_of_risk, mobility, "null"]
+    n: [2000, 5000, 10000, 20000]
+    replicates: 20          # spec allows 20 if compute-bound; state which is used
+    outer_folds: 5
+    inner_folds: 3
+    horizons: [10, 20]      # bins: ages 70 and 90
+    sanity_checks: true     # Adebayo: parameter randomisation every fold, label randomisation fold 0
+  smoke:
+    scenarios: [critical_period]
+    n: [2000]
+    replicates: 1
+    outer_folds: 2
+    inner_folds: 2
+    horizons: [10, 20]
+    sanity_checks: true
+    overrides:              # shrink everything; plumbing only
+      grid: {width: [8], lr: [0.003], weight_decay: [0.0001], dropout: [0.1]}
+      training: {max_epochs: 6, patience: 3}
+      attribution: {n_explain: 100, n_baselines: 20, n_samples: 8}

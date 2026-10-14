@@ -3,8 +3,8 @@
 *Overwritten in place — this file holds only what is true now. History lives in
 [`decisions_shared.md`](decisions_shared.md).*
 
-**As of:** 2026-08-29 · **Stage:** first deliverable (DGP) built and self-checking; model
-fitting not started.
+**As of:** 2026-10-14 · **Stage:** DGP built and self-checking; the pseudo-image CNN
+pipeline (analysis 02) built and smoke-tested. No study model run has been made.
 
 ---
 
@@ -19,6 +19,10 @@ fitting not started.
 | D05 | The study's `dgp` / `models` / `eval` module boundaries live beneath `src/` | `method` |
 | D06 | `doc/00_project_conventions.md` is the authoritative layout; deltas in `doc/conventions.md` | `method` |
 | D07 | HRS is provisionally `blind` until its data use agreement clause is confirmed | `data` |
+| D08 | Model input is one persisted `.npz` per dataset: raw `X`, outcome censored at attrition, `truth_*` apart | `data` |
+| D09 | The 2D pseudo-image CNN is causal in time, sees `cohort, sex`, and is scored on observed cells | `method` |
+| D10 | The per-person PNG is pixels only, on a shared calendar-year grid; models never read it | `method` |
+| D11 | Kill criteria K1–K5 pre-registered with numeric thresholds, before any `study` fit | `method` |
 
 ## 2. Ledger
 
@@ -34,7 +38,12 @@ appended to. All figures below are `N = 10,000`, `replicate = 0`, `master_seed =
 | realized attrition, range over scenarios | 0.2969–0.3030 (target 0.30) | D03 | 2026-08-29 |
 | missing cell fraction, range over scenarios | 0.4549–0.4565 | D02 | 2026-08-29 |
 | generation time per scenario at N = 10,000 | 1.25–1.51 s | — | 2026-08-29 |
-| DGP unit tests passing | 5 / 5 | — | 2026-08-29 |
+| unit tests passing (DGP 5, model pipeline 7) | 12 / 12 | D08, D09 | 2026-10-14 |
+| true-hazard ceiling, `critical_period`, AUC at bin 20 / C-index / interval NLL | 0.710 / 0.659 / 0.110 | D08 | 2026-10-14 |
+| cohort + sex alone (true coefficients), `critical_period`, AUC at bin 20 | 0.599 | D08 | 2026-10-14 |
+| CNN `study` shard time on Apple GPU, N = 2k / 5k / 10k / 20k (fold 0, upper bound) | 49 / 124 / 211 / 498 s | D09 | 2026-10-14 |
+| CNN `study` profile, full design, run serially | ~147 h for 2,400 shards | D09 | 2026-10-14 |
+| observed outcomes, `critical_period` | 7,339 event-free or censored · 1,085 disease · 1,576 death | D08 | 2026-10-14 |
 | scenarios implemented | 6 / 6 | — | 2026-08-29 |
 | `null` ground-truth support | exactly zero, `12 × 20` | D04 | 2026-08-29 |
 | HRS local pull size | 4.8 GB, 18 wave directories + RAND longitudinal file | D07 | 2026-08-29 |
@@ -54,9 +63,12 @@ A result that contradicts a row here is reporting a bug until proven otherwise.
 2. **Is the DGP approved?** The first deliverable is deliberately DGP-only; model
    implementation is blocked on a human review of the six diagnostic reports in
    `output/figures/data_analysis/01_dgp_diagnostics/`.
-3. **Which kill criteria are pre-registered?** [Section 8 of the study
-   specification](simulation_study_specification.md) requires them fixed before any model
-   runs. They are not yet transcribed into a decision record.
-4. **Does `data/analysis/` ever get written to?** The diagnostics currently regenerate
-   datasets in memory each run. If replicate sweeps arrive, decide whether to persist
-   them or keep re-deriving from the seed tuple.
+3. **Are the D11 thresholds the ones to keep?** The kill criteria are written down (D11),
+   with thresholds the assistant set. They can be amended only before the first `study`
+   result is read. Settled by a human read of D11.
+4. **How is the study profile run?** Probed at ~147 h serially on the Apple GPU (ledger).
+   Four probe shards (accumulation, replicate 0, fold 0, each N) are written and will be
+   reused; their metrics have not been read. Settled by choosing between running as is, the
+   spec's minimum scenario set, fewer replicates, tuning once per cell, or a cluster.
+5. **Does the CNN learn anything beyond the static covariates?** On one development fold
+   it did not (D09). Nested tuning over the widened grid is the test.

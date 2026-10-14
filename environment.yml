@@ -9,4 +9,10 @@ dependencies:
   - matplotlib>=3.9
   - pyyaml>=6.0
   - pytest>=8.3
+  - jupyterlab>=4.2
+  - ipykernel>=6.29
+  - nbclient>=0.10               # runs notebooks top to bottom headless
+  - pytorch>=2.5                  # the neural models (CPU build is enough at C x T = 12 x 20)
+  - scikit-learn>=1.5             # stratified folds
+  - pyarrow>=17                   # results to Parquet (spec §7)
   - pip

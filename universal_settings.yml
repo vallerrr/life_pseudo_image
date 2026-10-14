@@ -40,3 +40,37 @@ style:
       trajectory_linewidth: 0.9
       missing_cmap: "viridis"
       truth_cmap: "magma"
+
+    # Data creation 00: the life image -- one person's C x T pseudo-image read on
+    # two x-axes (age, calendar year) with disease and death as their own section.
+    00_data_creation:
+      figsize: [12.5, 7.6]          # one life, in detail
+      figsize_gallery: [12.5, 11.0] # four lives stacked
+      # The per-person export: pixels only, one column per calendar year.
+      export_format: "png"
+      export_cell_height: 12        # px per row
+      export_year_width: 6          # px per year, so a two-year bin is a 12 x 12 square
+      export_rule_px: 2             # rule between blocks of rows
+      savedir: "output/figures/data_creation/00_data_creation"
+      height_ratios: [3.0, 1.0]     # image section : outcome section
+      body_fs: 10
+      footer_fs: 8
+      annotation_fs: 8
+      # Signed channel values: a diverging ramp, two hues about a neutral midpoint.
+      image_colors: [0, "#EFEEEC", 3]
+      missing_color: "#A29C94"      # a cell with no value: hatched in figures, gray in the export
+      separator_color: "#B4B0AA"
+      axis_color: "#555555"
+      # Identity, top to bottom: upstream, midstream, downstream. Carried by the
+      # stream labels as well as by colour, so the hierarchy is never colour-alone.
+      stream_colors: [0, 1, 3]
+      # At risk / left the panel / disease / death, in status-code order.
+      status_colors: ["#B7C3CB", "#6F6A63", 0, 3]
+
+    # Analysis 02: the 2D pseudo-image CNN -- attribution against truth, calibration.
+    02_pseudo_image_cnn:
+      figsize: [14.0, 4.2]          # four maps in a row
+      figsize_square: [5.5, 5.0]
+      savedir: "output/figures/data_analysis/02_pseudo_image_cnn"
+      map_cmap: "magma"             # every map here is non-negative
+      separator_color: "#B4B0AA"

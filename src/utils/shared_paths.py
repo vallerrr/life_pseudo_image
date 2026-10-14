@@ -26,18 +26,26 @@ UNIVERSAL_SETTINGS = PROJECT_ROOT / "universal_settings.yml"
 # them (see doc/conventions.md) rather than in universal_settings.yml, which owns
 # plotting style only.
 DGP_CONFIG = SRC_DIR / "utils" / "shared_dgp_config.yaml"
+# The pseudo-image CNN's architecture, search grid and run profiles; same reasoning.
+PSEUDO_IMAGE_CNN_CONFIG = SRC_DIR / "utils" / "data_analysis_02_pseudo_image_cnn_config.yaml"
 
 # --- data -----------------------------------------------------------------
 DATA_DIR = PROJECT_ROOT / "data"
 HRS_DIR = DATA_DIR / "hrs"  # source pull; immutable, never edited in place
 ANALYSIS_DATA_DIR = DATA_DIR / "analysis"
 DGP_DIAGNOSTICS_DATA_DIR = ANALYSIS_DATA_DIR / "dgp_diagnostics"
+# Model-input arrays, one .npz per (scenario, N, replicate); written by 00_data_creation
+# and by any model job that asks for a dataset not yet on disk. Every model reads here.
+MODEL_INPUT_DIR = ANALYSIS_DATA_DIR / "data_creation"
+PSEUDO_IMAGE_CNN_DATA_DIR = ANALYSIS_DATA_DIR / "pseudo_image_cnn"
 
 # --- output ---------------------------------------------------------------
 OUTPUT_DIR = PROJECT_ROOT / "output"
 FIGURE_DIR = OUTPUT_DIR / "figures"
 TABLE_DIR = OUTPUT_DIR / "tables"
 DGP_DIAGNOSTICS_FIGURE_DIR = FIGURE_DIR / "data_analysis" / "01_dgp_diagnostics"
+LIFE_IMAGE_FIGURE_DIR = FIGURE_DIR / "data_creation" / "00_data_creation"
+PSEUDO_IMAGE_CNN_FIGURE_DIR = FIGURE_DIR / "data_analysis" / "02_pseudo_image_cnn"
 
 LOG_DIR = PROJECT_ROOT / "logs"
 
@@ -52,6 +60,10 @@ _WRITABLE_DIRS = (
     FIGURE_DIR,
     TABLE_DIR,
     DGP_DIAGNOSTICS_FIGURE_DIR,
+    LIFE_IMAGE_FIGURE_DIR,
+    MODEL_INPUT_DIR,
+    PSEUDO_IMAGE_CNN_DATA_DIR,
+    PSEUDO_IMAGE_CNN_FIGURE_DIR,
     LOG_DIR,
     MPL_CACHE_DIR,
 )
