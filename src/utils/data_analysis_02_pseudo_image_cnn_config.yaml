@@ -6,8 +6,14 @@
 # mean nothing -- the job stamps every row with the profile so they cannot be mixed.
 
 architecture:
-  kernel: [4, 5]            # channels x bins: the spec's 4x5 (§2)
-  depth: 2                  # stacked causal conv layers
+  # Every kernel is applied in parallel at every layer, branches concatenated after
+  # their ReLU; one kernel is the spec's plain 4x5 CNN (§2).
+  kernels: [[4, 5]]         # channels x bins
+  # One entry per layer: the time-axis dilation. With 5-wide kernels, [1, 2, 4] reads
+  # 1 + 4 * 7 = 29 bins back. D09's two undilated layers read 9, so the window and
+  # the chain fell out of view late in the panel (D13).
+  dilations: [1, 2, 4]
+  require_full_history: true  # build_model refuses a receptive field shorter than T
   hidden: 32                # per-bin features after the channel axis is flattened
   causal: true              # false only to measure the leak (see the module docstring)
 
@@ -48,6 +54,38 @@ profiles:
     inner_folds: 3
     horizons: [10, 20]      # bins: ages 70 and 90
     sanity_checks: true     # Adebayo: parameter randomisation every fold, label randomisation fold 0
+  # Development comparison, not a study result: does the CNN gain anything from the
+  # midstream channels (78% unobserved by design)? Same datasets, folds and seeds with
+  # and without them; its own shard directory, so no `study` shard is read. The truth
+  # never uses midstream, so a no_midstream arm that predicts as well says the stream
+  # is noise to this model, not that the stream should leave the DGP.
+  midstream_ablation:
+    scenarios: [critical_period, chain_of_risk]
+    n: [10000]
+    replicates: 1
+    outer_folds: 5
+    inner_folds: 3
+    horizons: [10, 20]
+    sanity_checks: false
+    arms:                   # arm name -> streams blanked from the model input
+      full: []
+      no_midstream: [midstream]
+  # Development comparison, not a study result: which architecture the study should
+  # use (D13). Fold 0 only (run with --shard), same datasets, folds and seeds in every
+  # arm. An arm given as a mapping overrides `architecture` for that arm.
+  architecture_dev:
+    scenarios: [critical_period, chain_of_risk]
+    n: [10000]
+    replicates: 1
+    outer_folds: 5
+    inner_folds: 3
+    horizons: [10, 20]
+    sanity_checks: true
+    arms:
+      full: {}              # the default above: 4x5, dilations 1-2-4, 29 bins
+      d09_short: {architecture: {kernels: [[4, 5]], dilations: [1, 1], require_full_history: false}}
+      multiscale_time: {architecture: {kernels: [[4, 3], [4, 5], [4, 9]], dilations: [1, 2]}}
+      multiscale_channel: {architecture: {kernels: [[1, 5], [4, 5], [12, 5]], dilations: [1, 2, 4]}}
   smoke:
     scenarios: [critical_period]
     n: [2000]

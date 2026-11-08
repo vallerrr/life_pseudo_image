@@ -23,6 +23,12 @@ config/*.ini
 !/output/figures/**/.gitkeep
 /output/tables/*
 !/output/tables/.gitkeep
+# Aggregate reports from blind sources: shared by hand, never pushed (D22).
+/output/reports/
 
 # Scratch: matplotlib cache and throwaway renders.
 /tmp/
+
+# Project conventions: kept locally, not shared in the repo.
+/doc/00_project_conventions.md
+/doc/conventions.md

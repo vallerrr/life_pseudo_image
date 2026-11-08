@@ -59,6 +59,7 @@ style:
       # Signed channel values: a diverging ramp, two hues about a neutral midpoint.
       image_colors: [0, "#EFEEEC", 3]
       missing_color: "#A29C94"      # a cell with no value: hatched in figures, gray in the export
+      absent_color: "#000000"       # export only: a year outside the person's ages 50-90
       separator_color: "#B4B0AA"
       axis_color: "#555555"
       # Identity, top to bottom: upstream, midstream, downstream. Carried by the
@@ -73,4 +74,15 @@ style:
       figsize_square: [5.5, 5.0]
       savedir: "output/figures/data_analysis/02_pseudo_image_cnn"
       map_cmap: "magma"             # every map here is non-negative
+      separator_color: "#B4B0AA"
+
+    # Analysis 04: HRS chronic disease CNN -- activation maps drawn from a run report.
+    04_hrs_chronic_cnn:
+      figsize: [17.0, 9.5]          # six maps, 2 x 3
+      figsize_average: [17.0, 5.0]  # the average life image: four panels in a row (D28)
+      savedir: "output/figures/data_analysis/04_hrs_chronic_cnn"
+      map_cmap: "magma"             # Grad-CAM is non-negative
+      share_cmap: "Blues"           # share of people observing a cell, 0-1; not gray, which means suppressed
+      missing_color: "#A29C94"      # suppressed or never-asked cell, as in the 00 images
+      diverging_cmap: "RdBu_r"      # differences and signed attributions, centred on 0
       separator_color: "#B4B0AA"

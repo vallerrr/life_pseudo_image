@@ -1,0 +1,338 @@
+# Analysis 04: HRS chronic disease by age A, the pseudo-image CNN and its activation
+# maps (D23). Read by src/data_analysis/04_hrs_chronic_cnn.py; recorded in every report.
+#
+# A profile overrides sections for one kind of run. `full` is the analysis; `smoke`
+# proves the plumbing on the fixture in a minute and its numbers mean nothing.
+
+# Outcomes, from shared_hrs_chronic.OUTCOMES: the conditions hibpe diabe cancre lunge
+# hearte stroke psyche arthre, and death (within death_horizon_years of the status
+# interview, D25). One set of models per outcome.
+conditions: [diabe, hibpe, hearte, death]
+death_horizon_years: 10
+# Image rows and static covariates (shared_hrs_variables, D26). `extended` is every
+# Yan (2026) risk factor RAND carries, plus married/partnered: 30 rows in five
+# domains, 11 static covariates (D26, D27).
+# `core` is the 12-channel, 2-covariate set of the first run (D23).
+channel_set: extended
+static_set: extended
+# The bin of the status interview: bin b covers ages 50 + 2(b-1) to 52 + 2(b-1), so 13
+# is ages 74-76 and the image is bins 1-12, ages 50-74. Choose it from `counts`.
+status_bin: 13
+counts_bins: [6, 18]          # `counts` reports every status bin in this range
+
+outer_folds: 5
+inner_folds: 3
+
+# How the image values are scaled on each training fold (shared_model_input.fit_standardiser,
+# D33). `cell_z`: per channel and age bin, SD from same-age peers (every run up to
+# 2026-10-27). `channel_z`: one mean and SD per channel over every age and person.
+# `channel_minmax`: per channel, 0-1 between the training `quantiles`, clipped. A network
+# may set its own `image_scaling`, which wins. The benchmarks scale their own inputs.
+image_scaling:
+  method: cell_z
+  quantiles: [0.01, 0.99]     # channel_minmax only
+
+# Each network is tuned on its own grid by inner-fold log loss, on the same folds.
+networks:
+  cnn: &cnn_default
+    architecture: &cnn_arch
+      kernels: [[4, 5]]       # the spec's 4x5 (analysis 02, D13)
+      dilations: [1, 2, 4]    # reaches every bin of an image up to 14 bins wide, either side
+      hidden: 32
+      causal: false           # every cell precedes the status interview (D23)
+    grid:
+      width: [16, 32]
+      lr: [0.0003, 0.001]
+      weight_decay: [0.0001]
+      dropout: [0.1]
+  rnn: &rnn_default           # GRU over bins, value + mask + Delta per channel (D24)
+    architecture: &rnn_arch
+      layers: 1
+      bidirectional: true     # every bin precedes the status interview
+    grid:
+      hidden: [32, 64]
+      lr: [0.0003, 0.001]
+      weight_decay: [0.0001]
+      dropout: [0.1]
+
+# The non-network benchmarks (data_analysis_04_hrs_chronic_cnn_benchmarks, D29), each
+# tuned on the household-grouped inner folds.
+benchmarks:
+  logistic_Cs: 10                       # ridge strengths searched for the summary / window logistic
+  windows: [[50, 60], [60, 70], [70, 200]]  # age windows of the manual life-course model
+  elastic_net: {Cs: 6, l1_ratios: [0.2, 0.5, 0.8], max_iter: 500}
+  lightgbm:
+    grid: {num_leaves: [15, 63], learning_rate: [0.03, 0.1], min_child_samples: [20, 100]}
+    fixed: {subsample: 0.8, subsample_freq: 1, colsample_bytree: 0.8, reg_lambda: 1.0}
+    max_estimators: 2000
+    early_stopping_rounds: 50
+
+# Map stability and faithfulness (data_analysis_04_hrs_chronic_cnn_stability, D31); the
+# `stability` command, with the `stability` profile's networks.
+stability:
+  networks: [cnn, mix_stacked, k1x5, rnn]   # the 4x5 CNN, the best kernel arm, a row-order-blind CNN, the RNN
+  seeds: 3                  # refits per fold with different initialisation
+  permutations: 3           # within-domain row shuffles per fold
+  deletion_k: [1, 3, 5, 10, 20]   # cells per person set to the mean in the faithfulness test
+  random_draws: 3           # random-cell draws per k, the faithfulness test's comparison
+  top_share: 0.1            # share of cells counted as a map's "top" cells
+
+# Learning curve (data_analysis_04_hrs_chronic_cnn_learning_curve, D32): every model
+# refitted on nested shares of each training fold's households; the `learning-curve`
+# command, with the `learning_curve` profile.
+learning_curve:
+  shares: [0.1, 0.25, 0.5, 1.0]
+  repeats: 2                # household draws per share below 1 (1.0 is the same sample every time)
+  benchmarks: [logistic_static, logistic_summary, lightgbm_summary, lightgbm_cells]
+
+# Who is predictable, and subgroups where the networks differ (data_analysis_04_hrs_chronic_cnn_subgroups,
+# D34); the `subgroups` command, with the `subgroups` profile.
+subgroups:
+  benchmarks: [logistic_static, logistic_summary, lightgbm_summary, lightgbm_cells]
+  consensus: [lightgbm_summary, cnn, rnn]   # models whose mean concordance ranks people from hardest to easiest
+  comparators: [lightgbm_summary, lightgbm_cells]   # each network's gap is taken to these in every subgroup
+  reference: lightgbm_summary               # the benchmark each network is set against in the disagreement split
+  top_share: 0.1                            # share of each fold counted as the largest disagreements
+  leave_behind_rows: [financial_strain, chronic_stress, loneliness, life_satisfaction, negative_affect,
+                      positive_affect, neuroticism, extroversion, openness, agreeableness, conscientiousness]
+
+# Clusters of cases' individual EG maps (data_analysis_04_hrs_chronic_cnn_pathways, D35); the
+# `pathways` command, with the `pathways` profile. Profiles reuse `subgroups.leave_behind_rows`.
+pathways:
+  benchmarks: [lightgbm_summary]   # fitted only to give each cluster its concordance next to the networks'
+  level: row                  # pathway vector per image row (30) or per domain (5)
+  drop_rows: []               # rows left out of the vector and its total (D36: [bmi])
+  k: [2, 3, 4, 5, 6]
+  seeds: 2                    # extra refits per fold and network (same hyperparameters); maps of the cases only
+  bootstrap: 20               # k-means refits on resampled cases
+  n_init: 20
+  silhouette_n: 3000
+  seed: 20261028
+  stable: {jaccard: 0.75, cosine: 0.8}   # Hennig's clusterwise Jaccard; matched centroid cosine over folds
+
+# What the networks' tie with LightGBM is made of (data_analysis_04_hrs_chronic_cnn_comparisons,
+# D38-D42); the `comparisons` command. The original models are fitted once per fold, as in `run`.
+comparisons:
+  parts: [time_order, inputs, ensemble]
+  time_order:                 # D38
+    arms: [fixed, person]     # fixed: one bin order for everyone; person: each person's observed bins shuffled
+    benchmarks: [lightgbm_summary, lightgbm_cells]   # also refitted under the person shuffle
+  bmi_trajectory:             # D41: run with the `bmi_trajectory` profile, not by default
+    row: bmi
+    arms: [none, single, level, shuffled]   # removed / latest value only / person mean, no shape / values out of order
+    benchmarks: [lightgbm_summary, lightgbm_cells]
+  ses_order:                  # D42: run with the `ses_order` profile, not by default
+    rows: &ses_rows [income, wealth, poverty, working, unemployed, medicaid, not_homeowner]  # financial_strain: 2 waves
+    arms: [none, level, shuffled]   # removed / each row at the person mean / the group shuffled in time, together
+    benchmarks: [lightgbm_summary, lightgbm_cells]
+  population: null            # D43: strata (names below) to cut the sample to before the folds; null keeps everyone
+  strata:                     # D42: arm-minus-original gaps within groups of the test fold, set from the original image
+    parts: [time_order, ses_order]
+    rows: *ses_rows           # change score: each row's within-person SD on a z scale, averaged over rows
+    quantiles: 3              # thirds of the change score, among people with 2+ waves of these rows
+    events:                   # a later value at least `fall` below / `rise` above an earlier one (raw units)
+      wealth_fall: {row: wealth, fall: 1.0}   # asinh of $k (2022): about a 63% fall
+      income_fall: {row: income, fall: 1.0}
+      left_work: {row: working, fall: 1}
+      medicaid_entry: {row: medicaid, rise: 1}
+      poverty_entry: {row: poverty, rise: 1}
+      home_loss: {row: not_homeowner, rise: 1}
+  inputs:                     # D39: refitted with the image only; LightGBM also on the statics only
+    benchmarks: [logistic_summary, lightgbm_summary, lightgbm_cells]
+  ensemble:                   # D40: logistic on logits, weights from inner out-of-fold predictions
+    stacks:
+      all: [logistic_summary, lightgbm_summary, lightgbm_cells, cnn, rnn]
+      benchmarks: [logistic_summary, lightgbm_summary, lightgbm_cells]
+      networks: [cnn, rnn]
+    averages:                 # plain mean of P(case), no weights
+      all: [logistic_summary, lightgbm_summary, lightgbm_cells, cnn, rnn]
+    references: [stack/benchmarks, original/lightgbm_summary, original/logistic_summary]
+    C: 1.0
+
+training:
+  batch_size: 256
+  max_epochs: 200
+  patience: 20
+  early_stop_fraction: 0.2    # of each training set's households, for early stopping only
+
+attribution:
+  n_explain: 2000             # test-fold people explained per fold
+  n_baselines: 50             # training-set baselines for Expected Gradients
+  n_samples: 32               # path samples per explained person
+
+sanity:
+  param_random: true          # every fold
+  label_random_folds: [0]     # costs a refit per fold listed
+
+device: auto
+
+profiles:
+  full: {}
+  # D30: the kernel-size experiment. Diabetes only; no benchmarks or RNN (their diabetes
+  # results from the 2026-10-26 run share these folds). Every arm: same outer and inner
+  # folds, the CNN's tuning grid, head and training; width split across a stage's branches.
+  kernels:
+    conditions: [diabe]
+    run_benchmarks: false
+    networks:
+      k1x3:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, 3], dilation: 1}], [{kernel: [1, 3], dilation: 2}], [{kernel: [1, 3], dilation: 4}]]}
+        grid: &kernel_grid {width: [16, 32], lr: [0.0003, 0.001], weight_decay: [0.0001], dropout: [0.1]}
+      k1x5:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: &arch_k1x5 {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, 5], dilation: 1}], [{kernel: [1, 5], dilation: 2}], [{kernel: [1, 5], dilation: 4}]]}
+        grid: *kernel_grid
+      k1x9:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, 9], dilation: 1}], [{kernel: [1, 9], dilation: 2}], [{kernel: [1, 9], dilation: 4}]]}
+        grid: *kernel_grid
+      k4x3:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [4, 3], dilation: 1}], [{kernel: [4, 3], dilation: 2}], [{kernel: [4, 3], dilation: 4}]]}
+        grid: *kernel_grid
+      k4x5:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [4, 5], dilation: 1}], [{kernel: [4, 5], dilation: 2}], [{kernel: [4, 5], dilation: 4}]]}
+        grid: *kernel_grid
+      k4x9:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [4, 9], dilation: 1}], [{kernel: [4, 9], dilation: 2}], [{kernel: [4, 9], dilation: 4}]]}
+        grid: *kernel_grid
+      k10x3:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [10, 3], dilation: 1}], [{kernel: [10, 3], dilation: 2}], [{kernel: [10, 3], dilation: 4}]]}
+        grid: *kernel_grid
+      k10x5:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [10, 5], dilation: 1}], [{kernel: [10, 5], dilation: 2}], [{kernel: [10, 5], dilation: 4}]]}
+        grid: *kernel_grid
+      k10x9:  # grid: row height x time width, 3 layers, dilations 1-2-4, same padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [10, 9], dilation: 1}], [{kernel: [10, 9], dilation: 2}], [{kernel: [10, 9], dilation: 4}]]}
+        grid: *kernel_grid
+      trajectory:  # 1 x 12: one variable's whole trajectory; one layer, no padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, all], padding: valid}]]}
+        grid: *kernel_grid
+      cross_section:  # 30 x 1: every variable at one age; one layer, no padding
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, require_full_history: false, stages: [[{kernel: [all, 1], padding: valid}]]}
+        grid: *kernel_grid
+      mix_parallel:  # 1x3 | 4x5 | 10x9 side by side in every layer, width split three ways
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, 3], dilation: 1}, {kernel: [4, 5], dilation: 1}, {kernel: [10, 9], dilation: 1}], [{kernel: [1, 3], dilation: 2}, {kernel: [4, 5], dilation: 2}, {kernel: [10, 9], dilation: 2}], [{kernel: [1, 3], dilation: 4}, {kernel: [4, 5], dilation: 4}, {kernel: [10, 9], dilation: 4}]]}
+        grid: *kernel_grid
+      mix_stacked:  # fine to coarse: 1x3, then 4x5, then 10x9
+        architecture: &arch_mix_stacked {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, 3], dilation: 1}], [{kernel: [4, 5], dilation: 2}], [{kernel: [10, 9], dilation: 4}]]}
+        grid: *kernel_grid
+      mix_separable:  # 30x1 (variables at each age), then 1x12 (over the life course)
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [all, 1], padding: valid}], [{kernel: [1, all], padding: valid}]]}
+        grid: *kernel_grid
+      mix_two_view:  # 1x12 | 30x1 side by side; each view collapsed on its own, joined at the head
+        architecture: {type: kernel_cnn, hidden: 32, split_width: true, stages: [[{kernel: [1, all], padding: valid}, {kernel: [all, 1], padding: valid}]]}
+        grid: *kernel_grid
+  smoke:
+    conditions: [diabe, death]
+    status_bin: 13
+    outer_folds: 2
+    inner_folds: 2
+    networks:
+      cnn:
+        architecture: {kernels: [[4, 5]], dilations: [1, 2, 4], hidden: 8, causal: false}
+        grid: {width: [8], lr: [0.003], weight_decay: [0.0001], dropout: [0.1]}
+      rnn:
+        architecture: {layers: 1, bidirectional: true}
+        grid: {hidden: [8], lr: [0.003], weight_decay: [0.0001], dropout: [0.1]}
+    training: {batch_size: 256, max_epochs: 4, patience: 2, early_stop_fraction: 0.2}
+    benchmarks:
+      logistic_Cs: 3
+      windows: [[50, 60], [60, 70], [70, 200]]
+      elastic_net: {Cs: 2, l1_ratios: [0.5], max_iter: 100}
+      lightgbm:
+        grid: {num_leaves: [7], learning_rate: [0.1], min_child_samples: [20]}
+        fixed: {subsample: 0.8, subsample_freq: 1, colsample_bytree: 0.8, reg_lambda: 1.0}
+        max_estimators: 30
+        early_stopping_rounds: 5
+    attribution: {n_explain: 100, n_baselines: 10, n_samples: 4}
+    device: cpu
+  # D31: map stability and faithfulness, diabetes. Run with the `stability` command.
+  stability:
+    conditions: [diabe]
+    run_benchmarks: false
+    networks:
+      cnn: *cnn_default
+      mix_stacked: {architecture: *arch_mix_stacked, grid: *kernel_grid}
+      k1x5: {architecture: *arch_k1x5, grid: *kernel_grid}
+      rnn: *rnn_default
+  # D33: image scaling. Diabetes and 10-year death; the CNN and the RNN each under the three
+  # scalings, same folds and grids. Benchmarks off: scaling does not touch them, and their
+  # results from the 2026-10-26 run share these folds.
+  scaling:
+    conditions: [diabe, death]
+    run_benchmarks: false
+    networks:
+      cnn: {<<: *cnn_default, image_scaling: {method: cell_z}}
+      cnn_channel_z: {<<: *cnn_default, architecture: {<<: *cnn_arch, type: cnn}, image_scaling: {method: channel_z}}
+      cnn_minmax: {<<: *cnn_default, architecture: {<<: *cnn_arch, type: cnn}, image_scaling: {method: channel_minmax}}
+      rnn: {<<: *rnn_default, image_scaling: {method: cell_z}}
+      rnn_channel_z: {<<: *rnn_default, architecture: {<<: *rnn_arch, type: rnn}, image_scaling: {method: channel_z}}
+      rnn_minmax: {<<: *rnn_default, architecture: {<<: *rnn_arch, type: rnn}, image_scaling: {method: channel_minmax}}
+  # D32: learning curve. Diabetes and 10-year death; the CNN, the RNN and four benchmarks.
+  learning_curve:
+    conditions: [diabe, death]
+    run_benchmarks: false
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+  # D34: who is predictable and where the networks differ from LightGBM. Diabetes, the most
+  # predictable outcome; the run's folds and seeds, every test person explained.
+  subgroups:
+    conditions: [diabe]
+    run_benchmarks: false
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+    attribution: {n_explain: 100000, n_baselines: 50, n_samples: 32}
+  # D35: pathways in cases' EG maps, diabetes; the run's fits plus two seed refits. `pathways` command.
+  pathways:
+    conditions: [diabe]
+    run_benchmarks: false
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+    attribution: {n_explain: 100000, n_baselines: 50, n_samples: 32}
+  # D36: D35 with the BMI row left out of the pathway vectors; same fits, folds and seeds.
+  pathways_no_bmi:
+    conditions: [diabe]
+    run_benchmarks: false
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+    attribution: {n_explain: 100000, n_baselines: 50, n_samples: 32}
+    pathways: {drop_rows: [bmi]}
+  # D41: is it BMI's trajectory or its level? The BMI row rewritten four ways, networks and
+  # LightGBM refitted against the original fits on the run's folds. Diabetes and hypertension,
+  # where BMI is the dominant row (D35). `comparisons` command.
+  bmi_trajectory:
+    conditions: [diabe, hibpe]
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+    comparisons: {parts: [bmi_trajectory]}
+  # D42-D43: does the order of socioeconomic change matter for people who went through a
+  # socioeconomic shock? Only they are kept (any of the events named in `population`); the
+  # socioeconomic rows are removed, held at each person's mean, or shuffled in time together,
+  # and every arm, the original included, is fitted on them alone. `comparisons` command.
+  ses_order:
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+    comparisons:
+      parts: [ses_order]
+      population: [wealth_fall, income_fall, medicaid_entry, poverty_entry, home_loss]   # not left_work: mostly retirement
+  # D44: the D41 BMI arms on people whose BMI changed (a gain or a loss of 3+ kg/m2 between
+  # any two waves), every arm fitted on them alone; strata by BMI change in place of D42's.
+  bmi_changers:
+    conditions: [diabe, hibpe]
+    networks:
+      cnn: *cnn_default
+      rnn: *rnn_default
+    comparisons:
+      parts: [bmi_trajectory]
+      population: [bmi_gain, bmi_loss]
+      strata:
+        parts: [bmi_trajectory]
+        rows: [bmi]           # change score: within-person SD of BMI
+        quantiles: 3
+        events:               # a later value 3+ kg/m2 above / below an earlier one (about 8-9 kg at 1.70 m)
+          bmi_gain: {row: bmi, rise: 3.0}
+          bmi_loss: {row: bmi, fall: 3.0}

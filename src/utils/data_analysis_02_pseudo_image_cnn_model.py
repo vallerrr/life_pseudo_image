@@ -28,7 +28,7 @@ from __future__ import annotations
 import copy
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -66,36 +66,92 @@ def image_tensor(data: ModelInput, standardiser: Standardiser) -> torch.Tensor:
     return torch.from_numpy(planes)
 
 
-def interval_targets(obs_time: np.ndarray, obs_type: np.ndarray, n_bins: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-(person, bin) class 0/1/2 and an at-risk mask, for the NLL."""
+def interval_targets(
+    obs_time: np.ndarray, obs_type: np.ndarray, n_bins: int, entry_time: np.ndarray | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-(person, bin) class 0/1/2 and an at-risk mask (``entry_time..obs_time``), for the NLL."""
     bins = np.arange(1, n_bins + 1)[None, :]
-    at_risk = bins <= obs_time[:, None]
+    entry = np.ones_like(obs_time) if entry_time is None else entry_time
+    at_risk = (bins <= obs_time[:, None]) & (bins >= entry[:, None])
     target = np.where(bins == obs_time[:, None], obs_type[:, None], 0)
     return torch.from_numpy(target.astype(np.int64)), torch.from_numpy(at_risk)
 
 
 # --- network ----------------------------------------------------------------
+class ConvEncoder(nn.Module):
+    """Stacked 2D convolutions over ``C x T`` that keep the ``C x T`` grid.
+
+    Each layer applies every kernel in ``kernels`` in parallel, each followed by its own
+    ReLU, and concatenates the branches; layer ``i`` dilates the time axis by
+    ``dilations[i]``. Parallel branches summed *before* a nonlinearity would be one
+    large kernel; concatenated after it they are features at several temporal scales.
+    Padding keeps every feature map on the input's cells, so a map over the last
+    layer (Grad-CAM) lines up with the image cell for cell.
+    """
+
+    def __init__(
+        self,
+        width: int,
+        kernels: tuple[tuple[int, int], ...],
+        dilations: tuple[int, ...],
+        dropout: float,
+        causal: bool = True,
+    ) -> None:
+        super().__init__()
+        self.kernels = tuple(tuple(k) for k in kernels)
+        self.dilations = tuple(dilations)
+        self.causal = causal
+        self.out_planes = width * len(self.kernels)
+        self.layers = nn.ModuleList(
+            nn.ModuleList(
+                nn.Conv2d(N_PLANES if i == 0 else self.out_planes, width, kernel, dilation=(1, d))
+                for kernel in self.kernels
+            )
+            for i, d in enumerate(self.dilations)
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    @property
+    def receptive_field(self) -> int:
+        """Bins of history, the current one included, that the output at a bin can read."""
+        longest = max(kt for _, kt in self.kernels)
+        return 1 + sum(d * (longest - 1) for d in self.dilations)
+
+    def _pad(self, h: torch.Tensor, kernel: tuple[int, int], dilation: int) -> torch.Tensor:
+        kc, kt = kernel
+        span = dilation * (kt - 1)
+        top = (kc - 1) // 2
+        left = span if self.causal else span // 2
+        return F.pad(h, (left, span - left, top, kc - 1 - top))
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        """``(B, 3, C, T)`` -> ``(B, out_planes, C, T)``."""
+        h = image
+        for convs, d in zip(self.layers, self.dilations):
+            h = self.dropout(
+                torch.cat([F.relu(conv(self._pad(h, k, d))) for conv, k in zip(convs, self.kernels)], dim=1)
+            )
+        return h
+
+
 class PseudoImageCNN(nn.Module):
+    """A :class:`ConvEncoder`, then a per-bin competing-risks head."""
+
     def __init__(
         self,
         n_channels: int,
         n_bins: int,
         n_static: int,
         width: int,
-        depth: int,
-        kernel: tuple[int, int],
+        kernels: tuple[tuple[int, int], ...],
+        dilations: tuple[int, ...],
         hidden: int,
         dropout: float,
         causal: bool = True,
     ) -> None:
         super().__init__()
-        self.kernel = tuple(kernel)
-        self.causal = causal
-        self.convs = nn.ModuleList(
-            nn.Conv2d(N_PLANES if i == 0 else width, width, self.kernel) for i in range(depth)
-        )
-        self.dropout = nn.Dropout(dropout)
-        self.collapse = nn.Conv1d(width * n_channels, hidden, 1)
+        self.encoder = ConvEncoder(width, kernels, dilations, dropout, causal)
+        self.collapse = nn.Conv1d(self.encoder.out_planes * n_channels, hidden, 1)
         self.head = nn.Sequential(
             nn.Conv1d(hidden + n_static, hidden, 1),
             nn.ReLU(),
@@ -104,22 +160,47 @@ class PseudoImageCNN(nn.Module):
         )
         self.baseline = nn.Parameter(torch.zeros(2, n_bins))
 
-    def _pad(self, h: torch.Tensor) -> torch.Tensor:
-        kc, kt = self.kernel
-        top = (kc - 1) // 2
-        left = kt - 1 if self.causal else (kt - 1) // 2
-        return F.pad(h, (left, kt - 1 - left, top, kc - 1 - top))
+    @property
+    def receptive_field(self) -> int:
+        return self.encoder.receptive_field
 
     def forward(self, image: torch.Tensor, static: torch.Tensor) -> torch.Tensor:
         """``(B, 3, C, T)``, ``(B, P)`` -> logits ``(B, 3, T)``, class 0 fixed at 0."""
-        h = image
-        for conv in self.convs:
-            h = self.dropout(F.relu(conv(self._pad(h))))
+        h = self.encoder(image)
         B, width, C, T = h.shape
         h = F.relu(self.collapse(h.reshape(B, width * C, T)))
         h = torch.cat([h, static[:, :, None].expand(-1, -1, T)], dim=1)
         events = self.head(h) + self.baseline
         return torch.cat([torch.zeros_like(events[:, :1]), events], dim=1)
+
+
+def build_model(
+    architecture: dict[str, Any], n_channels: int, n_bins: int, n_static: int, hyper: dict[str, Any]
+) -> PseudoImageCNN:
+    """The network a config describes. Refuses one that cannot see the whole panel.
+
+    With too short a receptive field the hazard late in the panel cannot read the
+    early bins at all: at 9 bins (two 5-wide layers, D09), the critical window 5-8
+    drops out of view from bin 17 on, and a chain from bins 1-6 to 10-14 never fits
+    in one view after bin 14 (D13).
+    """
+    model = PseudoImageCNN(
+        n_channels=n_channels,
+        n_bins=n_bins,
+        n_static=n_static,
+        width=hyper["width"],
+        kernels=tuple(tuple(k) for k in architecture["kernels"]),
+        dilations=tuple(architecture["dilations"]),
+        hidden=architecture["hidden"],
+        dropout=hyper["dropout"],
+        causal=architecture["causal"],
+    )
+    if architecture.get("require_full_history", True) and model.receptive_field < n_bins:
+        raise ValueError(
+            f"receptive field {model.receptive_field} < {n_bins} bins; set "
+            "require_full_history: false only to reproduce the short-sighted D09 network"
+        )
+    return model
 
 
 def disease_cif_at_end(logits: torch.Tensor) -> torch.Tensor:
@@ -164,17 +245,7 @@ def fit(
     train = tuple(t.to(device) for t in train)
     val = tuple(t.to(device) for t in val)
     image, static, target, at_risk = train
-    model = PseudoImageCNN(
-        n_channels=image.shape[2],
-        n_bins=image.shape[3],
-        n_static=static.shape[1],
-        width=hyper["width"],
-        depth=architecture["depth"],
-        kernel=tuple(architecture["kernel"]),
-        hidden=architecture["hidden"],
-        dropout=hyper["dropout"],
-        causal=architecture["causal"],
-    ).to(device)
+    model = build_model(architecture, image.shape[2], image.shape[3], static.shape[1], hyper).to(device)
     with torch.no_grad():
         # Start the per-bin baseline at the pooled log-odds of each event against
         # "neither" (~1% a bin). From zero -- a one-in-three hazard -- Adam spends the
@@ -246,12 +317,14 @@ def expected_gradients(
     n_samples: int,
     seed: int,
     chunk: int = 64,
+    target: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> np.ndarray:
     """Per-person Expected Gradients on the value plane, ``(n, C, T)``.
 
     Integrated Gradients averaged over baselines drawn from the training set, one
-    random path position per draw (Erion et al.), explaining the predicted disease
-    CIF at bin T. Only the value plane moves along the path; the mask and Delta stay
+    random path position per draw (Erion et al.), explaining ``target(model output)``,
+    one scalar per person: by default the predicted disease CIF at bin T, the hazard
+    models' quantity. Only the value plane moves along the path; the mask and Delta stay
     the explicand's own. A cell the explicand never observed is held at its own
     value too, so (x - x') is zero there and it receives no attribution: a model
     cannot be credited for reading a value nobody measured.
@@ -273,8 +346,12 @@ def expected_gradients(
         point = (reference + alpha * (values - reference)).requires_grad_(True)
         path = torch.cat([point[:, None], x_rep[:, 1:]], dim=1)
 
-        cif = disease_cif_at_end(model(path, static[start : start + b].repeat_interleave(n_samples, dim=0)))
-        (grad,) = torch.autograd.grad(cif.sum(), point)
+        cif = (target or disease_cif_at_end)(model(path, static[start : start + b].repeat_interleave(n_samples, dim=0)))
+        # A model that never reads the values (an oracle with no history term) gets
+        # no gradient at all, and that is zero attribution, not an error.
+        (grad,) = torch.autograd.grad(cif.sum(), point, allow_unused=True)
+        if grad is None:
+            grad = torch.zeros_like(point)
         attribution = ((values - reference) * grad).reshape(b, n_samples, *values.shape[1:])
         out[start : start + b] = attribution.mean(dim=1).detach().cpu().numpy()
     return out

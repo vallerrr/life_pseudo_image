@@ -9,6 +9,11 @@ It tunes on inner folds, refits on the outer training set, and writes
 * ``shards/<id>.npz``     -- the attribution maps and the calibration table,
 * ``shards/<id>.json``    -- config, seeds, git hash, chosen hyperparameters, timings.
 
+A profile may define ``arms``: named lists of streams to blank from the model input
+(``shared_model_input.mask_streams``), or mappings that also override the
+architecture (:func:`arm_config`). Every arm of a shard uses the same folds and
+seeds, so arms are paired. An arm other than ``full`` adds its name to the shard id.
+
 A finished shard is skipped on re-run, so a job that dies half way resumes. ``merge``
 concatenates the shards into ``results_<profile>.parquet``.
 
@@ -66,6 +71,7 @@ from utils.shared_model_input import (  # noqa: E402
     ModelInput,
     fit_standardiser,
     load_model_input,
+    mask_streams,
     stratified_folds,
 )
 from utils.shared_reproducibility import git_hash, stable_seed  # noqa: E402
@@ -96,10 +102,12 @@ class Shard:
     n: int
     replicate: int
     fold: int
+    arm: str = "full"
 
     @property
     def id(self) -> str:
-        return f"{self.scenario}_n{self.n}_r{self.replicate}_f{self.fold}"
+        suffix = "" if self.arm == "full" else f"_{self.arm}"
+        return f"{self.scenario}_n{self.n}_r{self.replicate}_f{self.fold}{suffix}"
 
 
 def shard_dir(profile: str) -> Path:
@@ -110,12 +118,31 @@ def results_path(profile: str) -> Path:
     return P.PSEUDO_IMAGE_CNN_DATA_DIR / profile / f"results_{profile}.parquet"
 
 
+def arms(config: dict[str, Any]) -> dict[str, Any]:
+    """Arm name -> its spec. A profile without arms has one, ``full``."""
+    return config["run"].get("arms") or {"full": []}
+
+
+def arm_config(config: dict[str, Any], arm: str) -> tuple[list[str], dict[str, Any]]:
+    """The streams an arm blanks, and the config it runs under.
+
+    An arm is either a list of streams to blank, or a mapping with optional ``mask``
+    (that list) and ``architecture`` (keys overriding the config's architecture).
+    """
+    spec = arms(config)[arm]
+    if not isinstance(spec, dict):
+        return list(spec), config
+    architecture = {**config["architecture"], **spec.get("architecture", {})}
+    return list(spec.get("mask", [])), {**config, "architecture": architecture}
+
+
 def enumerate_shards(config: dict[str, Any]) -> list[Shard]:
     run = config["run"]
     return [
-        Shard(config["profile"], scenario, n, replicate, fold)
-        for scenario, n, replicate, fold in itertools.product(
-            run["scenarios"], run["n"], range(run["replicates"]), range(run["outer_folds"])
+        Shard(config["profile"], scenario, n, replicate, fold, arm)
+        for scenario, n, replicate, fold, arm in itertools.product(
+            run["scenarios"], run["n"], range(run["replicates"]), range(run["outer_folds"]),
+            arms(config),
         )
     ]
 
@@ -126,7 +153,7 @@ def _seed(shard: Shard, tag: str) -> int:
 
 # --- one fit, from arrays to a trained model --------------------------------
 def _tensors(data: ModelInput, standardiser, static_names) -> tuple[torch.Tensor, ...]:
-    target, at_risk = interval_targets(data.obs_time, data.obs_type, data.X.shape[2])
+    target, at_risk = interval_targets(data.obs_time, data.obs_type, data.X.shape[2], data.entry_time)
     static = torch.from_numpy(data.static(tuple(static_names)).astype(np.float32))
     return image_tensor(data, standardiser), static, target, at_risk
 
@@ -171,7 +198,7 @@ def tune(train: ModelInput, config: dict[str, Any], shard: Shard) -> tuple[dict[
             result, standardiser = _fit_on(train.subset(fit_idx), hyper, config, _seed(shard, f"f{shard.fold}g{g}k{k}"))
             val = train.subset(val_idx)
             image, static, _, _ = _tensors(val, standardiser, config["static"])
-            nll.append(interval_nll(*predict_hazards(result.model, image, static), val.obs_time, val.obs_type))
+            nll.append(interval_nll(*predict_hazards(result.model, image, static), val.obs_time, val.obs_type, val.entry_time))
         scores.append({**hyper, "inner_nll": float(np.mean(nll))})
     best = min(range(len(grid)), key=lambda g: scores[g]["inner_nll"])
     return grid[best], scores
@@ -186,7 +213,8 @@ def run_shard(shard: Shard, config: dict[str, Any], force: bool = False) -> Path
         return table
 
     start = time.perf_counter()
-    data = load_model_input(shard.scenario, shard.n, shard.replicate)
+    streams, config = arm_config(config, shard.arm)
+    data = mask_streams(load_model_input(shard.scenario, shard.n, shard.replicate), streams)
     outer = stratified_folds(data.obs_type, config["run"]["outer_folds"], _seed(shard, "outer"))
     train_idx, test_idx = outer[shard.fold]
     train, test = data.subset(train_idx), data.subset(test_idx)
@@ -200,7 +228,7 @@ def run_shard(shard: Shard, config: dict[str, Any], force: bool = False) -> Path
     image, static, _, _ = _tensors(test, standardiser, config["static"])
     disease_hazard, death_hazard = predict_hazards(model, image, static)
     metrics, calibration = prediction_metrics(
-        disease_hazard, death_hazard, test.obs_time, test.obs_type, tuple(config["run"]["horizons"])
+        disease_hazard, death_hazard, test.obs_time, test.obs_type, tuple(config["run"]["horizons"]), test.entry_time
     )
 
     # Recovery (spec §3): Expected Gradients on a test subsample, training baselines.
@@ -234,7 +262,7 @@ def run_shard(shard: Shard, config: dict[str, Any], force: bool = False) -> Path
             shuffled = ModelInput(
                 X=train.X, M=train.M, Delta=train.Delta, S=train.S,
                 obs_time=train.obs_time[permutation], obs_type=train.obs_type[permutation],
-                truth={}, metadata=train.metadata,
+                truth={}, metadata=train.metadata, entry_time=train.entry_time[permutation],
             )
             shuffled_fit, _ = _fit_on(shuffled, hyper, config, _seed(shard, "labels_fit"))
             A_label, _ = attribution_map(shuffled_fit.model)
@@ -255,6 +283,7 @@ def run_shard(shard: Shard, config: dict[str, Any], force: bool = False) -> Path
             "n": shard.n,
             "replicate": shard.replicate,
             "model": MODEL,
+            "arm": shard.arm,
             "fold": shard.fold,
             "metric": list(metrics),
             "value": [float(v) for v in metrics.values()],
@@ -287,7 +316,10 @@ def merge(profile: str) -> Path:
     if not tables:
         raise FileNotFoundError(f"no finished shards under {P.relative(shard_dir(profile))}")
     destination = results_path(profile)
-    pd.concat([pd.read_parquet(t) for t in tables], ignore_index=True).to_parquet(destination, index=False)
+    merged = pd.concat([pd.read_parquet(t) for t in tables], ignore_index=True)
+    if "arm" in merged:  # shards written before arms existed are the full model
+        merged["arm"] = merged["arm"].fillna("full")
+    merged.to_parquet(destination, index=False)
     return destination
 
 

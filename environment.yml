@@ -14,5 +14,6 @@ dependencies:
   - nbclient>=0.10               # runs notebooks top to bottom headless
   - pytorch>=2.5                  # the neural models (CPU build is enough at C x T = 12 x 20)
   - scikit-learn>=1.5             # stratified folds
+  - lightgbm>=4.5                 # analysis 04's tuned boosting benchmarks (D29)
   - pyarrow>=17                   # results to Parquet (spec §7)
   - pip

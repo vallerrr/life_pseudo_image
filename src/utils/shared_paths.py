@@ -28,16 +28,23 @@ UNIVERSAL_SETTINGS = PROJECT_ROOT / "universal_settings.yml"
 DGP_CONFIG = SRC_DIR / "utils" / "shared_dgp_config.yaml"
 # The pseudo-image CNN's architecture, search grid and run profiles; same reasoning.
 PSEUDO_IMAGE_CNN_CONFIG = SRC_DIR / "utils" / "data_analysis_02_pseudo_image_cnn_config.yaml"
+# Analysis 04 (HRS chronic disease CNN): conditions, architecture, grid, profiles.
+HRS_CHRONIC_CNN_CONFIG = SRC_DIR / "utils" / "data_analysis_04_hrs_chronic_cnn_config.yaml"
 
 # --- data -----------------------------------------------------------------
 DATA_DIR = PROJECT_ROOT / "data"
 HRS_DIR = DATA_DIR / "hrs"  # source pull; immutable, never edited in place
+RAND_HRS_FILE = HRS_DIR / "randhrs1992_2022v1_STATA" / "randhrs1992_2022v1.dta"  # blind (D07)
 ANALYSIS_DATA_DIR = DATA_DIR / "analysis"
 DGP_DIAGNOSTICS_DATA_DIR = ANALYSIS_DATA_DIR / "dgp_diagnostics"
 # Model-input arrays, one .npz per (scenario, N, replicate); written by 00_data_creation
 # and by any model job that asks for a dataset not yet on disk. Every model reads here.
 MODEL_INPUT_DIR = ANALYSIS_DATA_DIR / "data_creation"
 PSEUDO_IMAGE_CNN_DATA_DIR = ANALYSIS_DATA_DIR / "pseudo_image_cnn"
+ORACLE_CHECKS_DATA_DIR = ANALYSIS_DATA_DIR / "oracle_checks"
+# HRS model input, written by shared_hrs_ingest. Derived from a blind source, so blind
+# itself (conventions §7).
+HRS_MODEL_INPUT_DIR = ANALYSIS_DATA_DIR / "hrs"
 
 # --- output ---------------------------------------------------------------
 OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -46,6 +53,11 @@ TABLE_DIR = OUTPUT_DIR / "tables"
 DGP_DIAGNOSTICS_FIGURE_DIR = FIGURE_DIR / "data_analysis" / "01_dgp_diagnostics"
 LIFE_IMAGE_FIGURE_DIR = FIGURE_DIR / "data_creation" / "00_data_creation"
 PSEUDO_IMAGE_CNN_FIGURE_DIR = FIGURE_DIR / "data_analysis" / "02_pseudo_image_cnn"
+HRS_CHRONIC_CNN_FIGURE_DIR = FIGURE_DIR / "data_analysis" / "04_hrs_chronic_cnn"
+
+# Aggregate reports from runs on blind sources: the only output of such a run an
+# assistant reads (doc/conventions.md, "Blind sources: run and report").
+SECURE_REPORT_DIR = OUTPUT_DIR / "reports" / "blind"
 
 LOG_DIR = PROJECT_ROOT / "logs"
 
@@ -64,6 +76,10 @@ _WRITABLE_DIRS = (
     MODEL_INPUT_DIR,
     PSEUDO_IMAGE_CNN_DATA_DIR,
     PSEUDO_IMAGE_CNN_FIGURE_DIR,
+    HRS_CHRONIC_CNN_FIGURE_DIR,
+    ORACLE_CHECKS_DATA_DIR,
+    HRS_MODEL_INPUT_DIR,
+    SECURE_REPORT_DIR,
     LOG_DIR,
     MPL_CACHE_DIR,
 )

@@ -7,9 +7,11 @@ between two models because each implemented it its own way.
 
 Two conventions hold throughout:
 
-* **Time is discrete.** A person is at risk in bins ``1..obs_time``; ``obs_type``
-  says how bin ``obs_time`` ended (``shared_model_input``). Hazards are ``(n, T)``
-  arrays, bin ``t`` in column ``t - 1``.
+* **Time is discrete.** A person is at risk in bins ``entry_time..obs_time``;
+  ``obs_type`` says how bin ``obs_time`` ended (``shared_model_input``). Hazards are
+  ``(n, T)`` arrays, bin ``t`` in column ``t - 1``. ``entry_time`` defaults to bin 1
+  for everyone, as in the simulation; a real panel's late entrants join each risk set
+  only from their entry bin (left truncation).
 * **Censoring is attrition.** Inverse-probability-of-censoring weights come from a
   Kaplan-Meier estimate of *still being observed*, so metrics that need a known
   status at a horizon are not computed on the people who stayed.
@@ -23,9 +25,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.stats import spearmanr
 
-from utils.shared_model_input import CENSORED, DEATH, DISEASE
-
-STREAM_NAMES = ("upstream", "midstream", "downstream")
+from utils.shared_model_input import CENSORED, DEATH, DISEASE, STREAM_NAMES
 
 
 # --- recovery (spec §3) -----------------------------------------------------
@@ -120,16 +120,23 @@ def cumulative_incidence(
     return np.cumsum(before * disease_hazard, axis=1), np.cumsum(before * death_hazard, axis=1)
 
 
-def still_observed(obs_time: np.ndarray, obs_type: np.ndarray, n_bins: int) -> np.ndarray:
+def _entry(entry_time: np.ndarray | None, obs_time: np.ndarray) -> np.ndarray:
+    return np.ones_like(obs_time) if entry_time is None else entry_time
+
+
+def still_observed(
+    obs_time: np.ndarray, obs_type: np.ndarray, n_bins: int, entry_time: np.ndarray | None = None
+) -> np.ndarray:
     """Kaplan-Meier ``K[t]`` = P(observation reaches bin t), for ``t = 0..T``.
 
     A censored person with ``obs_time = c < T`` was seen through bin ``c`` and lost
     before bin ``c + 1``; someone censored at ``T`` simply reached the end. Events
-    are not censoring. ``K[0] = 1``.
+    are not censoring. ``K[0] = 1``. A late entrant counts from its entry bin on.
     """
+    entry = _entry(entry_time, obs_time)
     K = np.ones(n_bins + 1)
     for t in range(1, n_bins + 1):
-        at_risk = obs_time >= t - 1  # entered bin t still event-free and observed...
+        at_risk = (obs_time >= t - 1) & (entry <= t)  # entered bin t still event-free and observed...
         at_risk &= ~((obs_time == t - 1) & (obs_type != CENSORED))  # ...and no event in t-1
         lost = at_risk & (obs_time == t - 1) & (obs_type == CENSORED)
         n_at_risk = at_risk.sum()
@@ -138,11 +145,15 @@ def still_observed(obs_time: np.ndarray, obs_type: np.ndarray, n_bins: int) -> n
 
 
 def _horizon_status(
-    obs_time: np.ndarray, obs_type: np.ndarray, K: np.ndarray, horizon: int
+    obs_time: np.ndarray, obs_type: np.ndarray, K: np.ndarray, horizon: int, entry_time: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Disease by ``horizon``? Known at all? And the IPC weight of each person."""
+    """Disease by ``horizon``? Known at all? And the IPC weight of each person.
+
+    Someone who entered after the horizon was never under observation before it, so
+    their status at the horizon does not count as known.
+    """
     event_by = (obs_type != CENSORED) & (obs_time <= horizon)
-    known_free = obs_time >= horizon  # observed event-free through the horizon
+    known_free = (obs_time >= horizon) & (_entry(entry_time, obs_time) <= horizon)
     known_free &= ~event_by
     known = event_by | known_free
     weight = np.zeros(obs_time.shape, dtype=float)
@@ -153,7 +164,12 @@ def _horizon_status(
 
 
 def disease_auc(
-    risk: np.ndarray, obs_time: np.ndarray, obs_type: np.ndarray, K: np.ndarray, horizon: int
+    risk: np.ndarray,
+    obs_time: np.ndarray,
+    obs_type: np.ndarray,
+    K: np.ndarray,
+    horizon: int,
+    entry_time: np.ndarray | None = None,
 ) -> float:
     """IPCW cumulative/dynamic AUC for disease by ``horizon``.
 
@@ -161,7 +177,7 @@ def disease_auc(
     horizon is known -- event-free through it, *or* dead first (Blanche et al.'s
     second definition, under which a competing death is a control).
     """
-    case, known, weight = _horizon_status(obs_time, obs_type, K, horizon)
+    case, known, weight = _horizon_status(obs_time, obs_type, K, horizon, entry_time)
     control = known & ~case
     if not case.any() or not control.any():
         return float("nan")
@@ -176,38 +192,50 @@ def disease_auc(
 
 
 def disease_brier(
-    cif: np.ndarray, obs_time: np.ndarray, obs_type: np.ndarray, K: np.ndarray, horizon: int
+    cif: np.ndarray,
+    obs_time: np.ndarray,
+    obs_type: np.ndarray,
+    K: np.ndarray,
+    horizon: int,
+    entry_time: np.ndarray | None = None,
 ) -> float:
     """IPCW Brier score of the predicted disease CIF at ``horizon``."""
-    case, _, weight = _horizon_status(obs_time, obs_type, K, horizon)
+    case, _, weight = _horizon_status(obs_time, obs_type, K, horizon, entry_time)
     return float(np.mean(weight * (case.astype(float) - cif) ** 2))
 
 
-def disease_concordance(risk: np.ndarray, obs_time: np.ndarray, obs_type: np.ndarray) -> float:
+def disease_concordance(
+    risk: np.ndarray, obs_time: np.ndarray, obs_type: np.ndarray, entry_time: np.ndarray | None = None
+) -> float:
     """Wolbers' competing-risks C-index for disease, without censoring weights.
 
     A pair (i, j) is comparable when i had disease in bin e and j was still
     disease-free at e: observed past e, censored at e, or already dead (a competing
-    death can never become disease). Harrell-type: this is the simple version, not
+    death can never become disease), and had entered by e. Harrell-type: this is the simple version, not
     the IPCW-adjusted Antolini/Wolbers estimator, and it is reported as such.
     """
     cases = np.flatnonzero(obs_type == DISEASE)
     if cases.size == 0:
         return float("nan")
+    entry = _entry(entry_time, obs_time)
     concordant = comparable = 0.0
     for i in cases:
         e = obs_time[i]
         j = (obs_time > e) | ((obs_time == e) & (obs_type == CENSORED)) | (obs_type == DEATH)
+        j &= entry <= e
         comparable += j.sum()
         concordant += np.sum(risk[i] > risk[j]) + 0.5 * np.sum(risk[i] == risk[j])
     return float(concordant / comparable) if comparable else float("nan")
 
 
-def aalen_johansen_disease(obs_time: np.ndarray, obs_type: np.ndarray, horizon: int) -> float:
+def aalen_johansen_disease(
+    obs_time: np.ndarray, obs_type: np.ndarray, horizon: int, entry_time: np.ndarray | None = None
+) -> float:
     """Nonparametric disease CIF at ``horizon`` in discrete time."""
+    entry = _entry(entry_time, obs_time)
     survival, cif = 1.0, 0.0
     for t in range(1, horizon + 1):
-        at_risk = obs_time >= t
+        at_risk = (obs_time >= t) & (entry <= t)
         n = at_risk.sum()
         if n == 0:
             break
@@ -219,11 +247,17 @@ def aalen_johansen_disease(obs_time: np.ndarray, obs_type: np.ndarray, horizon: 
 
 
 def calibration_table(
-    cif: np.ndarray, obs_time: np.ndarray, obs_type: np.ndarray, horizon: int, groups: int = 10
+    cif: np.ndarray,
+    obs_time: np.ndarray,
+    obs_type: np.ndarray,
+    horizon: int,
+    groups: int = 10,
+    entry_time: np.ndarray | None = None,
 ) -> np.ndarray:
     """``(groups, 3)``: mean predicted CIF, observed (Aalen-Johansen) CIF, group size."""
     edges = np.quantile(cif, np.linspace(0, 1, groups + 1))
     group = np.clip(np.searchsorted(edges, cif, side="right") - 1, 0, groups - 1)
+    entry = _entry(entry_time, obs_time)
     rows = []
     for g in range(groups):
         members = group == g
@@ -231,7 +265,7 @@ def calibration_table(
             rows.append(
                 (
                     cif[members].mean(),
-                    aalen_johansen_disease(obs_time[members], obs_type[members], horizon),
+                    aalen_johansen_disease(obs_time[members], obs_type[members], horizon, entry[members]),
                     members.sum(),
                 )
             )
@@ -243,11 +277,12 @@ def interval_nll(
     death_hazard: np.ndarray,
     obs_time: np.ndarray,
     obs_type: np.ndarray,
+    entry_time: np.ndarray | None = None,
 ) -> float:
     """Mean per-interval multinomial NLL over the bins each person was at risk."""
     n, T = disease_hazard.shape
     bins = np.arange(1, T + 1)[None, :]
-    at_risk = bins <= obs_time[:, None]
+    at_risk = (bins <= obs_time[:, None]) & (bins >= _entry(entry_time, obs_time)[:, None])
     last = bins == obs_time[:, None]
     probability = np.where(
         last & (obs_type[:, None] == DISEASE),
@@ -268,6 +303,7 @@ def prediction_metrics(
     obs_time: np.ndarray,
     obs_type: np.ndarray,
     horizons: tuple[int, ...],
+    entry_time: np.ndarray | None = None,
 ) -> tuple[dict[str, float], np.ndarray]:
     """Spec §4 for one test fold; returns the metrics and the calibration table at T.
 
@@ -277,15 +313,15 @@ def prediction_metrics(
     """
     T = disease_hazard.shape[1]
     disease_cif, _ = cumulative_incidence(disease_hazard, death_hazard)
-    K = still_observed(obs_time, obs_type, T)
+    K = still_observed(obs_time, obs_type, T, entry_time)
     metrics = {
-        "interval_nll": interval_nll(disease_hazard, death_hazard, obs_time, obs_type),
-        "c_index_disease": disease_concordance(disease_cif[:, -1], obs_time, obs_type),
+        "interval_nll": interval_nll(disease_hazard, death_hazard, obs_time, obs_type, entry_time),
+        "c_index_disease": disease_concordance(disease_cif[:, -1], obs_time, obs_type, entry_time),
     }
     for horizon in horizons:
         risk = disease_cif[:, horizon - 1]
-        metrics[f"auc_disease_t{horizon}"] = disease_auc(risk, obs_time, obs_type, K, horizon)
-        metrics[f"brier_disease_t{horizon}"] = disease_brier(risk, obs_time, obs_type, K, horizon)
-    table = calibration_table(disease_cif[:, -1], obs_time, obs_type, T)
+        metrics[f"auc_disease_t{horizon}"] = disease_auc(risk, obs_time, obs_type, K, horizon, entry_time)
+        metrics[f"brier_disease_t{horizon}"] = disease_brier(risk, obs_time, obs_type, K, horizon, entry_time)
+    table = calibration_table(disease_cif[:, -1], obs_time, obs_type, T, entry_time=entry_time)
     metrics["ici_decile"] = float(np.average(np.abs(table[:, 0] - table[:, 1]), weights=table[:, 2]))
     return metrics, table
